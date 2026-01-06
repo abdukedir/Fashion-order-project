@@ -24,10 +24,10 @@ class CartSerializer(serializers.ModelSerializer):
         fields = ["id", "session_id", "items"]
 
 
-class OrderSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Order
-        fields = "__all__"
+# class OrderSerializer(serializers.ModelSerializer):
+#     class Meta:
+#         model = Order
+#         fields = "__all__"
 # below this i am doing the details of the order and the lists of the order
 class OrderSerializer(serializers.ModelSerializer):
     cart = CartSerializer(read_only=True)
@@ -43,3 +43,14 @@ class OrderSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         
+class ConfirmedOrderStatsSerializer(serializers.Serializer):
+    """
+    Serializer to generate order statistics for confirmed orders.
+    Aggregates total quantities per product, size, and color.
+    This is not tied directly to a model because we are using aggregation.
+    """
+
+    product_name = serializers.CharField()
+    size = serializers.CharField()
+    color = serializers.CharField()
+    total_quantity = serializers.IntegerField()

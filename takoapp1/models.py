@@ -68,17 +68,34 @@ class CartItem(models.Model):
 class Order(models.Model):
     STATUS_PENDING = "PENDING"
     STATUS_CONFIRMED = "CONFIRMED"
+    STATUS_REJECTED = "REJECTED"   # ✅ ADD THIS
     STATUS_DELIVERED = "DELIVERED"
 
     STATUS_CHOICES = [
         (STATUS_PENDING, "Pending"),
         (STATUS_CONFIRMED, "Confirmed"),
+        (STATUS_REJECTED, "Rejected"),  # ✅ ADD THIS
         (STATUS_DELIVERED, "Delivered"),
     ]
 
     customer_name = models.CharField(max_length=255)
     cart = models.OneToOneField(Cart, on_delete=models.CASCADE, related_name="order")
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING
+    )
 
     payment_screenshot = models.ImageField(upload_to="payments/", null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.customer_name} - {self.status}"
+
+class Notification(models.Model):
+    message = models.CharField(max_length=255)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.message

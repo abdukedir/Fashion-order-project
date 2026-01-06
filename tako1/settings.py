@@ -26,7 +26,9 @@ INSTALLED_APPS = [
     # Third party
     "rest_framework",
     "corsheaders",  # ✅ Added CORS Headers
-
+    'rest_framework.authtoken',  # ← ADD THIS LINE
+     "channels",
+    
     # Local app
     "takoapp1",
 ]
@@ -48,7 +50,7 @@ MIDDLEWARE = [
 # ✅ ALLOW REACT TO ACCESS THE API
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
 ]
 
 # ✅ ALLOW IMAGES TO BE VIEWED DURING DEVELOPMENT
@@ -83,7 +85,20 @@ TEMPLATES = [
 # WSGI
 # ======================
 WSGI_APPLICATION = "tako1.wsgi.application"
-
+ASGI_APPLICATION = "tako1.asgi.application"
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
+}
+# CHANNEL_LAYERS = {
+#     "default": {
+#         "BACKEND": "channels_redis.core.RedisChannelLayer",
+#         "CONFIG": {
+#             "hosts": [("127.0.0.1", 6379)],
+#         },
+#     },
+# }
 # ======================
 # DATABASE
 # ======================
