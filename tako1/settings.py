@@ -27,11 +27,20 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",  # ✅ Added CORS Headers
     'rest_framework.authtoken',  # ← ADD THIS LINE
-     "channels",
+    "channels",
     
     # Local app
     "takoapp1",
 ]
+INSTALLED_APPS += ["channels"]
+ASGI_APPLICATION = "your_project_name.asgi.application"
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"  # For dev
+    }
+}
+
 
 # ======================
 # MIDDLEWARE
@@ -91,17 +100,7 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels.layers.InMemoryChannelLayer"
     }
 }
-# CHANNEL_LAYERS = {
-#     "default": {
-#         "BACKEND": "channels_redis.core.RedisChannelLayer",
-#         "CONFIG": {
-#             "hosts": [("127.0.0.1", 6379)],
-#         },
-#     },
-# }
-# ======================
-# DATABASE
-# ======================
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",

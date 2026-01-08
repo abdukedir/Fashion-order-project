@@ -1,29 +1,117 @@
 import json
-from django.utils.timezone import now, timedelta
-from django.contrib.auth.hashers import make_password
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
+from datetime import timedelta
 
-from rest_framework import generics, status
+from django.utils.timezone import now
+from django.db.models import Sum
+from django.contrib.auth.hashers import make_password
+from django.shortcuts import get_object_or_404
+
+from rest_framework import generics, status, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
-from django.db.models import Sum
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 
-from .models import Product, Cart, CartItem, Order, User
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+
+from .models import Product, Cart, CartItem, Order, User, Notification
 from .serializers import (
     ProductSerializer,
     OrderSerializer,
     ConfirmedOrderStatsSerializer
 )
 
-# ======================
-# PRODUCT VIEWS
-# ======================
+# =====================================================
+# PAGINATION
+# =====================================================
+class DefaultPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 50
+
+
+# =====================================================
+# NOTIFICATION SERIALIZER
+# =====================================================
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = "__all__"
+
+
+# =====================================================
+# NOTIFICATIONS API
+# =====================================================
+class NotificationListAPIView(generics.ListAPIView):
+    queryset = Notification.objects.filter(is_read=False).order_by("-created_at")
+    serializer_class = NotificationSerializer
+    pagination_class = DefaultPagination
+    permission_classes = [IsAuthenticated]
+
+
+# =====================================================
+# PERMISSIONS
+# =====================================================
+class IsAdminOrSuperAdmin:
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated and
+            (request.user.is_staff or request.user.is_superuser)
+        )
+
+
+class IsSalesOrAdmin:
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated and
+            request.user.role in [User.ROLE_ADMIN, User.ROLE_SALES]
+        )
+
+
+class IsAdminOnlyForReports:
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated and
+            request.user.role == User.ROLE_ADMIN
+        )
+
+
+# =====================================================
+# PRODUCTS
+# =====================================================
 class ProductCreateAPIView(generics.CreateAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
     parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+
+
+class ProductStatusUpdateAPIView(generics.UpdateAPIView):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+    http_method_names = ["patch"]
+
+    def patch(self, request, *args, **kwargs):
+        product = self.get_object()
+        is_active = request.data.get("is_active")
+
+        if is_active is None:
+            return Response(
+                {"error": "is_active field is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        product.is_active = bool(is_active)
+        product.save(update_fields=["is_active"])
+
+        return Response({
+            "product_id": product.id,
+            "is_active": product.is_active,
+            "message": "Product status updated successfully"
+        })
 
 
 class ProductListAPIView(generics.ListAPIView):
@@ -31,307 +119,185 @@ class ProductListAPIView(generics.ListAPIView):
     serializer_class = ProductSerializer
 
 
-class Confirm(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Product.objects.all()
-    serializer_class = ProductSerializer
-    lookup_field = "pk"
-
-
-# ======================
-# ORDER & CART LOGIC
-# ======================
+# =====================================================
+# ORDER CREATE (CHECKOUT + REALTIME)
+# =====================================================
 class OrderCreateAPIView(APIView):
-    """
-    Checkout endpoint:
-    - Creates a Cart
-    - Creates CartItems (supports multiple colors)
-    - Creates Order linked to Cart
-    - Sends WebSocket notification
-    """
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        data = request.data
-        try:
-            # 1️⃣ Create Cart
-            cart = Cart.objects.create()
+        items = json.loads(request.data.get("items", "[]"))
 
-            # 2️⃣ Parse items JSON
-            items_json = data.get("items", "[]")
-            items_list = json.loads(items_json)
+        if not items:
+            return Response({"error": "Cart is empty"}, status=400)
 
-            if not items_list:
-                return Response({"error": "Your shopping bag is empty"},
-                                status=status.HTTP_400_BAD_REQUEST)
+        cart = Cart.objects.create()
 
-            # 3️⃣ Create Order
-            order = Order.objects.create(
-                customer_name=data.get("username"),
+        for item in items:
+            product = get_object_or_404(Product, id=item["id"])
+            CartItem.objects.create(
                 cart=cart,
-                payment_screenshot=request.FILES.get("payment_screenshot"),
-                status="PENDING"
+                product=product,
+                quantity=item.get("quantity", 1),
+                size=item.get("size", "M"),
+                color=item.get("color", "Default"),
             )
 
-            # 4️⃣ Create CartItems (handle multiple colors)
-            for item_data in items_list:
-                product_id = item_data.get("id")
-                quantity = item_data.get("quantity", 1)
-                size = item_data.get("size", "M")
-                colors = item_data.get("colors", [])
+        order = Order.objects.create(
+            customer_name=request.data.get("username"),
+            cart=cart,
+            payment_screenshot=request.FILES.get("payment_screenshot"),
+            status="PENDING",
+        )
 
-                try:
-                    product = Product.objects.get(id=product_id)
-                except Product.DoesNotExist:
-                    continue
+        notification = Notification.objects.create(
+            message=f"🛒 New order from {order.customer_name}"
+        )
 
-                if isinstance(colors, list) and colors:
-                    for color in colors:
-                        CartItem.objects.create(
-                            cart=cart,
-                            product=product,
-                            quantity=quantity,
-                            size=size,
-                            color=color
-                        )
-                else:
-                    CartItem.objects.create(
-                        cart=cart,
-                        product=product,
-                        quantity=quantity,
-                        size=size,
-                        color="Default"
-                    )
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            "admin_notifications",
+            {
+                "type": "send_notification",
+                "message": notification.message,
+                "order_id": order.id,
+                "created_at": str(notification.created_at),
+            }
+        )
 
-            # 5️⃣ Send WebSocket notification
-            try:
-                channel_layer = get_channel_layer()
-                async_to_sync(channel_layer.group_send)(
-                    "admin_notifications",
-                    {
-                        "type": "send_notification",
-                        "message": f"🛒 New order from {order.customer_name}",
-                        "order_id": order.id,
-                        "created_at": str(order.created_at),
-                    }
-                )
-            except Exception as ws_error:
-                print(f"WebSocket error: {ws_error}")
-
-            return Response(
-                {
-                    "order_id": order.id,
-                    "message": "Order placed successfully! Pending verification.",
-                },
-                status=status.HTTP_201_CREATED
-            )
-
-        except Exception as e:
-            print(f"Checkout Error: {str(e)}")
-            return Response(
-                {"error": "Failed to process order. Ensure all fields are valid."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        return Response(
+            {"order_id": order.id, "message": "Order placed successfully"},
+            status=status.HTTP_201_CREATED
+        )
 
 
-# ======================
-# CONFIRM ORDER
-# ======================
-class ConfirmOrderAPIView(APIView):
-    """Updates Order status to CONFIRMED."""
+# =====================================================
+# UPDATE ORDER STATUS
+# =====================================================
+class UpdateOrderStatusAPIView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+
     def patch(self, request, pk):
-        try:
-            order = Order.objects.get(id=pk)
-            order.status = "CONFIRMED"
-            order.save()
-            return Response(OrderSerializer(order).data)
-        except Order.DoesNotExist:
-            return Response({"error": "Order not found"}, status=status.HTTP_404_NOT_FOUND)
+        status_value = request.data.get("status")
+
+        if status_value not in ["CONFIRMED", "DELIVERED", "REJECTED"]:
+            return Response({"error": "Invalid status"}, status=400)
+
+        order = get_object_or_404(Order, id=pk)
+        order.status = status_value
+        order.save(update_fields=["status"])
+
+        notification = Notification.objects.create(
+            message=f"Order #{order.id} updated to {status_value}"
+        )
+
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            "admin_notifications",
+            {
+                "type": "send_notification",
+                "message": notification.message,
+                "order_id": order.id,
+                "created_at": str(notification.created_at),
+            }
+        )
+
+        return Response(OrderSerializer(order).data)
 
 
-# ======================
-# CREATE SALES USER
-# ======================
-class CreateSalesUserAPIView(APIView):
-    """Create a user with Sales Admin permissions."""
-    def post(self, request):
-        try:
-            user = User.objects.create(
-                username=request.data["username"],
-                password=make_password(request.data["password"]),
-                is_sales_admin=True
-            )
-            return Response({"username": user.username, "status": "Sales admin created"})
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-# ======================
-# LIST ALL ORDERS
-# ======================
+# =====================================================
+# LIST ORDERS WITH PAGINATION
+# =====================================================
 class OrderListAPIView(generics.ListAPIView):
-    """List all orders (for admin dashboard)."""
-    queryset = Order.objects.all().order_by('-created_at')
     serializer_class = OrderSerializer
-
-
-# ======================
-# BASE REPORT VIEW
-# ======================
-class BaseConfirmedOrdersReportAPIView(generics.ListAPIView):
-    """
-    Base class for confirmed orders report.
-    Subclasses set period_days for today/week/month.
-    Supports optional filters: size and color.
-    """
-    serializer_class = ConfirmedOrderStatsSerializer
-    period_days = 0  # override in subclass
+    pagination_class = DefaultPagination
+    permission_classes = [IsSalesOrAdmin]
 
     def get_queryset(self):
-        today = now().date()
-        start_date = today - timedelta(days=self.period_days)
-
-        # 1️⃣ Filter confirmed orders by period
-        orders = Order.objects.filter(status='CONFIRMED', created_at__date__gte=start_date)
-
-        # 2️⃣ Get related CartItems
-        cart_items = CartItem.objects.filter(cart__order__in=orders)
-
-        # 3️⃣ Apply optional query filters
-        size_filter = self.request.query_params.get('size')
-        color_filter = self.request.query_params.get('color')
-        if size_filter:
-            cart_items = cart_items.filter(size=size_filter)
-        if color_filter:
-            cart_items = cart_items.filter(color=color_filter)
-
-        # 4️⃣ Aggregate by product, size, color
-        queryset = cart_items.values('product__name', 'size', 'color') \
-            .annotate(total_quantity=Sum('quantity')) \
-            .order_by('product__name', 'size', 'color')
-
-        # 5️⃣ Rename product__name to product_name
-        for item in queryset:
-            item['product_name'] = item.pop('product__name')
-
-        return queryset
+        status_filter = self.request.query_params.get("status")
+        qs = Order.objects.all().order_by("-created_at")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
 
 
-# ======================
-# TODAY / WEEK / MONTH REPORTS
-# ======================
-class ConfirmedOrdersTodayAPIView(BaseConfirmedOrdersReportAPIView):
-    period_days = 0
+# =====================================================
+# CONFIRMED REPORTS
+# =====================================================
+class ConfirmedOrdersReportAPIView(generics.ListAPIView):
+    serializer_class = ConfirmedOrderStatsSerializer
+    permission_classes = [IsAuthenticated, IsAdminOnlyForReports]
+    pagination_class = DefaultPagination
+
+    def get_queryset(self):
+        period = self.request.query_params.get("period", "day")
+        days = 1 if period == "day" else 7 if period == "week" else 30
+        start_date = now() - timedelta(days=days)
+
+        qs = CartItem.objects.filter(
+            cart__order__status="CONFIRMED",
+            cart__order__created_at__gte=start_date
+        ).values(
+            "product__name", "size", "color"
+        ).annotate(
+            total_quantity=Sum("quantity")
+        ).order_by("product__name")
+
+        for row in qs:
+            row["product_name"] = row.pop("product__name")
+
+        return qs
 
 
-class ConfirmedOrdersWeekAPIView(BaseConfirmedOrdersReportAPIView):
-    period_days = 7
+# =====================================================
+# DELIVERED REPORTS
+# =====================================================
+class DeliveredOrdersReportBase(generics.ListAPIView):
+    serializer_class = ConfirmedOrderStatsSerializer
+    permission_classes = [IsAuthenticated, IsAdminOnlyForReports]
+    pagination_class = DefaultPagination
+    days = 1
 
+    def get_queryset(self):
+        start_date = now() - timedelta(days=self.days)
 
-class ConfirmedOrdersMonthAPIView(BaseConfirmedOrdersReportAPIView):
-    period_days = 30
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from django.utils.timezone import now, timedelta
-from django.db.models import Sum
-from .models import CartItem, Order
-
-# =============================
-# TOTAL CONFIRMED ORDERS TODAY
-# =============================
-class ConfirmedOrdersTodayTotalAPIView(APIView):
-    """
-    Returns total quantity of confirmed orders today.
-    Optional filters: size and color
-    """
-    def get(self, request):
-        today = now().date()
-        cart_items = CartItem.objects.filter(
-            cart__order__status='CONFIRMED',
-            cart__order__created_at__date=today
+        qs = CartItem.objects.filter(
+            cart__order__status="DELIVERED",
+            cart__order__created_at__gte=start_date
+        ).values(
+            "product__name", "size", "color"
+        ).annotate(
+            total_quantity=Sum("quantity")
         )
 
-        # Optional filters
-        size_filter = request.query_params.get('size')
-        color_filter = request.query_params.get('color')
-        if size_filter:
-            cart_items = cart_items.filter(size=size_filter)
-        if color_filter:
-            cart_items = cart_items.filter(color=color_filter)
+        for row in qs:
+            row["product_name"] = row.pop("product__name")
 
-        # Sum all quantities
-        total_quantity = cart_items.aggregate(total=Sum('quantity'))['total'] or 0
-
-        return Response({
-            "date": str(today),
-            "size": size_filter or "All",
-            "color": color_filter or "All",
-            "total_quantity": total_quantity
-        })
+        return qs
 
 
-# =============================
-# TOTAL CONFIRMED ORDERS THIS WEEK
-# =============================
-class ConfirmedOrdersWeekTotalAPIView(APIView):
-    """
-    Returns total quantity of confirmed orders in the last 7 days.
-    Optional filters: size and color
-    """
-    def get(self, request):
-        today = now().date()
-        week_ago = today - timedelta(days=7)
-        cart_items = CartItem.objects.filter(
-            cart__order__status='CONFIRMED',
-            cart__order__created_at__date__gte=week_ago
+class DeliveredOrdersTodayAPIView(DeliveredOrdersReportBase):
+    days = 1
+
+
+class DeliveredOrdersWeekAPIView(DeliveredOrdersReportBase):
+    days = 7
+
+
+class DeliveredOrdersMonthAPIView(DeliveredOrdersReportBase):
+    days = 30
+
+
+# =====================================================
+# CREATE SALES USER
+# =====================================================
+class CreateSalesUserAPIView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminOrSuperAdmin]
+
+    def post(self, request):
+        User.objects.create(
+            username=request.data["username"],
+            password=make_password(request.data["password"]),
+            role=User.ROLE_SALES
         )
-
-        size_filter = request.query_params.get('size')
-        color_filter = request.query_params.get('color')
-        if size_filter:
-            cart_items = cart_items.filter(size=size_filter)
-        if color_filter:
-            cart_items = cart_items.filter(color=color_filter)
-
-        total_quantity = cart_items.aggregate(total=Sum('quantity'))['total'] or 0
-
-        return Response({
-            "start_date": str(week_ago),
-            "end_date": str(today),
-            "size": size_filter or "All",
-            "color": color_filter or "All",
-            "total_quantity": total_quantity
-        })
-
-
-# =============================
-# TOTAL CONFIRMED ORDERS THIS MONTH
-# =============================
-class ConfirmedOrdersMonthTotalAPIView(APIView):
-    """
-    Returns total quantity of confirmed orders in the last 30 days.
-    Optional filters: size and color
-    """
-    def get(self, request):
-        today = now().date()
-        month_ago = today - timedelta(days=30)
-        cart_items = CartItem.objects.filter(
-            cart__order__status='CONFIRMED',
-            cart__order__created_at__date__gte=month_ago
-        )
-
-        size_filter = request.query_params.get('size')
-        color_filter = request.query_params.get('color')
-        if size_filter:
-            cart_items = cart_items.filter(size=size_filter)
-        if color_filter:
-            cart_items = cart_items.filter(color=color_filter)
-
-        total_quantity = cart_items.aggregate(total=Sum('quantity'))['total'] or 0
-
-        return Response({
-            "start_date": str(month_ago),
-            "end_date": str(today),
-            "size": size_filter or "All",
-            "color": color_filter or "All",
-            "total_quantity": total_quantity
-        })
+        return Response({"message": "Sales user created successfully"})
