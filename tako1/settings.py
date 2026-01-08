@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ======================
 SECRET_KEY = "django-insecure-change-this-in-production"
 DEBUG = True
-ALLOWED_HOSTS = ["*"] # Added '*' for easier local testing
+ALLOWED_HOSTS = ["*"]  # Added '*' for easier local testing
 
 # ======================
 # INSTALLED APPS
@@ -25,50 +25,42 @@ INSTALLED_APPS = [
 
     # Third party
     "rest_framework",
-    "corsheaders",  # ✅ Added CORS Headers
-    'rest_framework.authtoken',  # ← ADD THIS LINE
+    "rest_framework.authtoken",
+    "corsheaders",
     "channels",
-    
+
     # Local app
     "takoapp1",
 ]
-INSTALLED_APPS += ["channels"]
-ASGI_APPLICATION = "your_project_name.asgi.application"
-
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"  # For dev
-    }
-}
-
 
 # ======================
 # MIDDLEWARE
 # ======================
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware", # ✅ MUST BE AT THE TOP
+    "corsheaders.middleware.CorsMiddleware",  # Must be at the top
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.common.CommonMiddleware", # ✅ CommonMiddleware must be after CORS
+    "django.middleware.common.CommonMiddleware",  # After CORS
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-# ✅ ALLOW REACT TO ACCESS THE API
+# ======================
+# CORS CONFIGURATION
+# ======================
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3001",
 ]
 
-# ✅ ALLOW IMAGES TO BE VIEWED DURING DEVELOPMENT
-CORS_ALLOW_ALL_ORIGINS = True # Set to False and use the list above in production
+CORS_ALLOW_ALL_ORIGINS = True  # Only for development; set to False in production
 
 # ======================
 # URL CONFIG
 # ======================
-ROOT_URLCONF = "tako1.urls" 
+ROOT_URLCONF = "tako1.urls"
 
 # ======================
 # TEMPLATES
@@ -84,23 +76,30 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
-                "django.template.context_processors.media", # ✅ Added for images
+                "django.template.context_processors.media",  # Added for media files
             ],
         },
     },
 ]
 
 # ======================
-# WSGI
+# WSGI & ASGI
 # ======================
 WSGI_APPLICATION = "tako1.wsgi.application"
 ASGI_APPLICATION = "tako1.asgi.application"
+
+# ======================
+# CHANNEL LAYERS
+# ======================
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
+        "BACKEND": "channels.layers.InMemoryChannelLayer",  # Use Redis in production
     }
 }
 
+# ======================
+# DATABASE
+# ======================
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -143,4 +142,7 @@ REST_FRAMEWORK = {
     ],
 }
 
+# ======================
+# DEFAULT AUTO FIELD
+# ======================
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
